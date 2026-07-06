@@ -1,0 +1,19 @@
+- implement all techniques learned (how to apply)
+- make sure authentication works, if not gg
+- have user friendly stored procedure
+- don't depend too much on stored procedure
+- have scheduled backup job created (automated)
+- make sure data recovery works
+- make sure no error during accident deletion
+- be fully prepared for demo, enough data in DB
+- put encryption, hashing, data protection technique
+- dont only focus on technology, people and processes also matter
+- during demo, tcer will ask to explain our solution
+- if demo got issue, no distinction
+
+- make sure have CIA (confidentiality, integrity, availability)
+- can implement stuff other than what tcer teach
+
+Scenario in report
+- production (cannot apply anonymization and static masking)
+- analytical
