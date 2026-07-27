@@ -5,32 +5,37 @@ Use SmartBankDB;
 GO
 
 Create Table Staff(
-StaffID varchar(6) primary key,
-StaffName varchar(100),
-Position varchar(20),
-Branch varchar(50),
-Phone varchar(20),
-Salary decimal(10,2)
+	StaffID varchar(6) primary key,
+	StaffName varchar(100),
+	Position varchar(20),
+	Branch varchar(50),
+	Phone varchar(20),
+	Salary decimal(10,2)
 );
 Create Table Customer(
-CustomerID varchar(6) primary key,
-CustomerName varchar(100),
-ICNumber varchar(20),
-Phone varchar(20),
-Address varchar(200)
+	CustomerID varchar(6) primary key,
+	CustomerName varchar(100),
+	ICNumber varchar(20),
+	Phone varchar(20),
+	Address varchar(200)
 );
 Create Table Account(
-AccountID varchar(10) primary key,
-CustomerID varchar(6),
-AccountType varchar(20),
-Balance decimal(12,2)
+	AccountID varchar(10) primary key,
+	CustomerID varchar(6),
+	AccountType varchar(20),
+	Balance decimal(12,2),
+	Pin char(6)
+
+	FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
 );
 Create Table TransactionRecord(
-TransID int identity primary key,
-AccountID varchar(10),
-TransDate datetime,
-Amount decimal(12,2),
-TransactionType varchar(20)
+	TransID int identity primary key,
+	AccountID varchar(10),
+	TransDate datetime,
+	Amount decimal(12,2),
+	TransactionType varchar(20),
+
+	FOREIGN KEY (AccountID) REFERENCES Account(AccountID)
 );
 
 -- Foreign Key connections
@@ -49,12 +54,12 @@ CREATE USER [BM00001] FOR LOGIN [BM00001];
 ALTER ROLE bank_manager ADD MEMBER [BM00001];
 GO
 
-CREATE LOGIN [BO00001] WITH PASSWORD = 'StrongP@ssw0rd2!';
+CREATE LOGIN [BO00001] WITH PASSWORD = 'BO00001PWD';
 CREATE USER  [BO00001] FOR LOGIN [BO00001];
 ALTER ROLE bank_officer ADD MEMBER [BO00001];
 GO
 
-CREATE LOGIN [C00001] WITH PASSWORD = 'StrongP@ssw0rd3!';
+CREATE LOGIN [C00001] WITH PASSWORD = 'C00001PWD';
 CREATE USER  [C00001] FOR LOGIN [C00001];
 ALTER ROLE customer ADD MEMBER [C00001];
 GO
@@ -63,7 +68,7 @@ GO
 EXECUTE AS LOGIN = 'BM00001';
 SELECT * FROM vw_MyStaffRecord;   -- should return only BM001's row
 SELECT * FROM Staff;  -- should fail (denied)
-SELECT SUSER_NAME()
+SELECT SUSER_SNAME()
 REVERT;
 GO
 
@@ -72,7 +77,7 @@ SELECT * FROM vw_MyStaffRecord;
 REVERT;
 GO
 
-SELECT SUSER_NAME()
+SELECT SUSER_NAMES()
 
 -- All user can access this view
 CREATE VIEW vw_StaffPublic
@@ -99,7 +104,7 @@ SELECT * FROM Staff
 WHERE Position = 'Bank Officer';
 GO
 
--- 3. View all customer accounts
+-- 3. View all customer accounts **(Need to join with account table?)
 CREATE VIEW vw_AllCustomer
 AS
 SELECT * FROM Customer;
@@ -123,10 +128,7 @@ GRANT SELECT ON vw_MyStaffRecord TO bank_officer;
 GO
 
 -- 2. View all customer accounts
-CREATE VIEW vw_CustomerAccount
-AS
-SELECT * FROM Customer;
-GO
+GRANT SELECT ON vw_AllCustomer TO bank_officer;
 
 -- 3. View all transactions
 GRANT SELECT ON vw_AllTransactions TO bank_officer;
@@ -136,15 +138,22 @@ GRANT SELECT ON vw_AllTransactions TO bank_officer;
 GRANT SELECT ON vw_MyStaffRecord TO db_admin;
 GO
 
+
 ------------- Customer Permissions -------------
 -- 1. View only their own record
 CREATE VIEW vw_MyCustomerAccounts
 AS
 SELECT * FROM Customer
 WHERE CustomerID = SUSER_SNAME();
+GO
 
 --2. View only their own transactions
 CREATE VIEW vw_MyTransactionRecords
 AS
-SELECT * FROM TransactionRecord
-WHERE CustomerID = SUSER_NAME();
+SELECT * FROM TransactionRecord t
+JOIN Account a on t.AccountID = a.AccountID
+WHERE a.CustomerID = SUSER_SNAME();
+GO
+
+GRANT SELECT ON vw_MyCustomerAccounts   TO customer;
+GRANT SELECT ON vw_MyTransactionRecords TO customer;

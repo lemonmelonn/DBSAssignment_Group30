@@ -14,8 +14,8 @@ CREATE TABLE AuditLog(
 GO
 
 -- 1. Only DBAs may create and manage tables (not data)
-GRANT CREATE TABLE TO db_admin;
-DENY  CREATE TABLE TO bank_manager, bank_officer, customer;
+GRANT CREATE, ALTER TABLE TO db_admin;
+DENY  CREATE, ALTER TABLE TO bank_manager, bank_officer, customer;
 -- Lock down base-table DML for everyone; all writes must go through procs.
 DENY INSERT, UPDATE, DELETE ON Staff TO bank_manager, bank_officer, customer, db_admin;
 DENY INSERT, UPDATE, DELETE ON Customer TO bank_manager, bank_officer, customer, db_admin;
@@ -37,14 +37,14 @@ BEGIN
 		SET StaffName = ISNULL(@StaffName, StaffName)
             Phone = ISNULL(@Phone, Phone),
 			Branch = ISNULL(@Branch, Branch)
-		WHERE StaffID = SUSER_NAME()
+		WHERE StaffID = SUSER_SNAME();
 
 		INSERT INTO AuditLog (ActionType, TableName, PerformedBy, Status, Details)
-		VALUES ('UPDATE', 'STAFF', SUSER_NAME(), 'Success', 'Self staff update');
+		VALUES ('UPDATE', 'STAFF', SUSER_SNAME(), 'Success', 'Self staff update');
 	END TRY
 	BEGIN CATCH
 		INSERT INTO AuditLog (ActionType, TableName, PerformedBy, Status, Details)
-		VALUES ('UPDATE', 'STAFF', SUSER_NAME(), 'Failed', ERROR_MESSAGE());
+		VALUES ('UPDATE', 'STAFF', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
 		THROW;
 	END CATCH
 END
@@ -61,11 +61,11 @@ CREATE PROCEDURE sp_InsertBankOfficer
 AS
 BEGIN
 	SET NOCOUNT ON;
-	DECLARE @NewID varchar(10);
+	DECLARE @NewID varchar(6);
 
 	BEGIN TRY
 		SELECT @NewID = 'BO' + RIGHT('0000' +
-            CAST(ISNULL(MAX(CAST(SUBSTRING(StaffID,3,LEN(StaffID)) AS INT)), 0) + 1 AS varchar(10)), 4)
+            CAST(ISNULL(MAX(CAST(SUBSTRING(StaffID,3,LEN(StaffID)) AS INT)), 0) + 1 AS varchar(6)), 4)
         FROM Staff
         WHERE Position = 'Bank Officer';
 
@@ -73,11 +73,11 @@ BEGIN
 		VALUES (@NewID, @StaffName, 'Bank Officer', @Branch, @Phone, @Salary);
 
 		INSERT INTO AuditLog (ActionType, TableName, PerformedBy, Status, Details)
-		VALUES ('INSERT', 'STAFF', SUSER_NAME(), 'Sucecess', 'Created StaffID=' + @NewID);
+		VALUES ('INSERT', 'STAFF', SUSER_SNAME(), 'Sucecess', 'Created StaffID=' + @NewID);
 	END TRY
 	BEGIN CATCH
 		INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
-        VALUES ('INSERT', 'Staff', SUSER_NAME(), 'Failed', ERROR_MESSAGE());
+        VALUES ('INSERT', 'Staff', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
 		THROW
 	END CATCH
 END
@@ -85,11 +85,11 @@ GO
 
 -- Update Bank Officer details
 CREATE PROCEDURE sp_UpdateBankOfficer
-	@StaffID varchar(10),
-	@StaffName varchar(100)	= NULL,
-	@Branch    varchar(50)  = NULL,
-    @Phone     varchar(20)  = NULL,
-    @Salary    decimal(10,2)= NULL
+	@StaffID    varchar(6),
+	@StaffName  varchar(100)    = NULL,
+	@Branch     varchar(50)     = NULL,
+    @Phone      varchar(20)     = NULL,
+    @Salary     decimal(10,2)   = NULL
 AS
 BEGIN
 	SET NOCOUNT ON;
@@ -105,12 +105,12 @@ BEGIN
             Salary		= ISNULL(@Salary, Salary)
 		WHERE StaffID = @StaffID;
 
-	INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
-        VALUES ('UPDATE', 'Staff', SUSER_NAME(), 'Success', 'Updated StaffID=' + @StaffID);
+	    INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
+        VALUES ('UPDATE', 'Staff', SUSER_SNAME(), 'Success', 'Updated StaffID=' + @StaffID);
     END TRY
     BEGIN CATCH
         INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
-        VALUES ('UPDATE', 'Staff', SUSER_NAME(), 'Failed', ERROR_MESSAGE());
+        VALUES ('UPDATE', 'Staff', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
         THROW;
     END CATCH
 END
@@ -118,7 +118,7 @@ GO
 
 -- Delete Bank Officer records
 CREATE PROCEDURE sp_DeleteBankOfficer
-	@StaffID varchar(10)
+	@StaffID varchar(6)
 AS
 BEGIN
 	SET NOCOUNT ON;
@@ -133,11 +133,11 @@ BEGIN
 		DELETE FROM Staff WHERE StaffID = @StaffID;
 
         INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
-        VALUES ('DELETE', 'Staff', SUSER_NAME(), 'Success', 'Deleted StaffID=' + @StaffID);
+        VALUES ('DELETE', 'Staff', SUSER_SNAME(), 'Success', 'Deleted StaffID=' + @StaffID);
     END TRY
     BEGIN CATCH
         INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
-        VALUES ('DELETE', 'Staff', SUSER_NAME(), 'Failed', ERROR_MESSAGE());
+        VALUES ('DELETE', 'Staff', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
         THROW;
     END CATCH
 END
@@ -157,7 +157,7 @@ CREATE PROCEDURE sp_InsertCustomer
 AS
 BEGIN
 	SET NOCOUNT ON;
-	DECLARE @NewID varchar(10);
+	DECLARE @NewID varchar(6);
 
 	BEGIN TRY
 		SELECT @NewID = 'C' + RIGHT('0000' +
@@ -168,19 +168,44 @@ BEGIN
 		VALUES(@NewID, @CustomerName, @ICNumber, @Phone, @Address);
 
 		INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
-        VALUES ('INSERT', 'Customer', SUSER_NAME(), 'Success', 'Created CustomerID=' + @NewID);
+        VALUES ('INSERT', 'Customer', SUSER_SNAME(), 'Success', 'Created CustomerID=' + @NewID);
     END TRY
     BEGIN CATCH
         INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
-        VALUES ('INSERT', 'Customer', SUSER_NAME(), 'Failed', ERROR_MESSAGE());
+        VALUES ('INSERT', 'Customer', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
         THROW;
     END CATCH
 END
 GO
 
+CREATE PROCEDURE sp_CreateAccount
+    @CustomerID     varchar(6),
+    @AccountType    varchar(20),
+    @Pin            char(6)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @NewID  varchar(10);
+    DECLARE @Salt UNIQUEIDENTIFIER = NEWID();
+
+    BEGIN TRY
+        IF NOT EXISTS (SELECT 1 FROM Customer WHERE CustomerID = @CustomerID)
+            THROW 50050, 'Customer does not exist', 1;
+        IF @AccountType NOT IN ('Savings', 'Current', 'Fixed Deposit')
+            THROW 50051, 'Invalid account type', 1;
+        IF @Pin NOT LIKE '[0-9][0-9][0-9][0-9][0-9][0-9]'
+            THROW 50052, 'PIN must be exactly 6 digits', 1;
+
+        SELECT @NewID = 'A' + RIGHT('000000000' +
+            CAST(ISNULL(MAX(CAST(SUBSTRING(AccountID,2,LEN(AccountID)) AS INT)), 0) + 1 AS varchar(10)), 9)
+        FROM Account;
+        
+        INSERT INTO Account(AccountID, CustomerID, AccountType, Balance, PinHash)
+
+
 -- Update Customer details'
 CREATE PROCEDURE sp_UpdateCustomer
-	@CustomerID		varchar(10),
+	@CustomerID		varchar(6),
 	@CustomerName	varchar(100)= NULL,
 	@ICNumber		varchar(20)	= NULL,
 	@Phone			varchar(20)	= NULL,
@@ -236,3 +261,134 @@ GO
 GRANT EXECUTE ON sp_InsertCustomer TO bank_officer;
 GRANT EXECUTE ON sp_UpdateCustomer TO bank_officer;
 GRANT EXECUTE ON sp_DeleteCustomer TO bank_officer;
+GO
+
+-- 5. Only Customers may perform transactions. Valid transactions are deposit, withdrawal, and transfer.
+-- deposit
+CREATE PROCEDURE sp_Deposit
+    @AccountID  varchar(10),
+    @Amount     decimal(12,2)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @OwnerID varchar(6);
+
+    BEGIN TRY
+        SELECT @OwnerID = CustomerID FROM Account WHERE AccountID = @AccountID;
+
+        IF @OwnerID IS NULL
+            THROW 50030, 'Account does not exist',1;
+        IF @OwnerID <> SUSER_SNAME()
+            THROW 50031,'Access denied: not your account',1;
+        IF @Amount <= 0
+            THROW 50032,'Invalid amount',1;
+
+        BEGIN TRANSACTION;
+        UPDATE Account SET Balance = Balance + @Amount WHERE AccountID = @AccountID;
+
+        INSERT INTO TransactionRecord (AccountID, TransDate, Amount, TransactionType)
+        VALUES (@AccountID, GETDATE(), @Amount, 'Deposit');
+        COMMIT TRANSACTION;
+
+        INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
+        VALUES('Deposit', 'TransactionRecord', SUSER_SNAME(), 'Success', 'Deposit Amount=' + CAST(@Amount AS varchar(20)));
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
+        VALUES('Deposit', 'TransactionRecord', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
+        THROW;
+    END CATCH
+END
+GO 
+
+CREATE PROCEDURE sp_Withdraw
+    @AccountID varchar(10)
+    @Amount decimal (12,2)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @OwnerID varchar(6);
+
+    BEGIN TRY
+        Select @Owner = CustomerID FROM Account WHERE AccountID = @AccountID;
+
+        IF @Owner IS NULL
+            THROW 50030, 'Account does not exist', 1
+        IF @Owner <> SUSER_SNAME()
+            THROW 50031, 'Access denied: not your account',1;
+        IF @Amount <= 0
+            THROW 50032, 'Invalid amount', 1;
+        IF (SELECT Balance FROM Account WHERE AccountID = @AccountID) < @Amount
+            THROW 50033, 'Insuffiecient amount', 1;
+        
+        BEGIN TRANSACTION;
+        UPDATE Account 
+            SET Balance = Balance - @Amount WHERE AccountID = @AccountID;
+
+        INSERT INTO TransactionRecord(AccountID, TransDate, Amount, TransactionType)
+        VALUES (@AccountID, GETDATE(), @Amount, 'Withdrawal');
+        COMMIT TRANSACTION;
+        
+        INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
+        VALUES ('Withdrawal', 'TransactionRecord', SUSER_SNAME(), 'Success', 'Withdraw Amount=' + CAST(@Amount AS varchar(20)));
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
+        VALUES ('Withdrawal', 'TransactionRecord', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE PROCEDURE sp_Transfer
+    @AccountID      varchar(10),
+    @ToAccountID    varchar(10),
+    @Amount         decimal(12,2)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Owner  varchar(6);
+
+    BEGIN TRY
+        SELECT @Owner = CustomerID FROM Account WHERE AccountID = @AccountID;
+
+        IF @Owner IS NULL
+            THROW 50030, 'Account does not exist', 1;
+        IF NOT EXISTS (SELECT AccountID FROM Account WHERE AccountID = @ToAccountID)
+            THROW 50030, 'Account does not exist', 1;
+        IF @Owner <> SUSER_SNAME()
+            THROW 50031, 'Access denied: not your account', 1;
+        IF @Amount <= 0
+            THROW 50032, 'Invalid amount', 1;
+        IF (SELECT Balance FROM Account WHERE AccountID = @AccountID) < @Amount
+            THROW 50033, 'Insuffiecient amount', 1;
+        IF  @ToAccountID = @AccountID
+            THROW 50034, 'Cannot transfer to the same account', 1;
+        
+        BEGIN TRANSACTION;
+        UPDATE Account 
+            SET Balance = Balance - @Amount WHERE AccountID = @AccountID;
+        UPDATE Account
+            SET Balance = Balance + @Amount WHERE AccountID = @ToAccountID;
+        INSERT INTO TransactionRecord(AccountID, TransDate, Amount, TransactionType)
+        VALUES(@AccountID, GETDATE(), @Amount, 'Transfer');
+
+        COMMIT TRANSACTION;
+        INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
+        VALUES ('Transfer', 'TransactionRecord', SUSER_SNAME(), 'Success', 'From=' + @AccountID + ' To=' + @ToAccountID + 'Transfer Amount=' + CAST(@Amount AS varchar(20)));
+
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
+        VALUES ('Transfer', 'TransactionRecord', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
+        THROW;
+    END CATCH
+END
+GO
+
+GRANT EXECUTE ON sp_Deposit  TO customer;
+GRANT EXECUTE ON sp_Withdraw TO customer;
+GRANT EXECUTE ON sp_Transfer TO customer;
