@@ -15,7 +15,7 @@ Create Table Staff(
 Create Table Customer(
 	CustomerID varchar(6) primary key,
 	CustomerName varchar(100),
-	ICNumber varchar(20),
+	ICNumber varbinary(256),
 	Phone varchar(20),
 	Address varchar(200)
 );
@@ -24,7 +24,8 @@ Create Table Account(
 	CustomerID varchar(6),
 	AccountType varchar(20),
 	Balance decimal(12,2),
-	Pin char(6)
+	PinHash varbinary(64),
+	PinSalt varbinary(16),
 
 	FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
 );
@@ -37,9 +38,6 @@ Create Table TransactionRecord(
 
 	FOREIGN KEY (AccountID) REFERENCES Account(AccountID)
 );
-
--- Foreign Key connections
-
 
 
 -- Create Role
@@ -64,20 +62,6 @@ CREATE USER  [C00001] FOR LOGIN [C00001];
 ALTER ROLE customer ADD MEMBER [C00001];
 GO
 
--- Test as Bank Manager
-EXECUTE AS LOGIN = 'BM00001';
-SELECT * FROM vw_MyStaffRecord;   -- should return only BM001's row
-SELECT * FROM Staff;  -- should fail (denied)
-SELECT SUSER_SNAME()
-REVERT;
-GO
-
-EXECUTE AS LOGIN = 'C00001';
-SELECT * FROM vw_MyStaffRecord;
-REVERT;
-GO
-
-SELECT SUSER_NAMES()
 
 -- All user can access this view
 CREATE VIEW vw_StaffPublic
@@ -157,3 +141,51 @@ GO
 
 GRANT SELECT ON vw_MyCustomerAccounts   TO customer;
 GRANT SELECT ON vw_MyTransactionRecords TO customer;
+
+-----------------------------------------------------------------------------------------
+--- Data Protection
+--  Dynamic Data Masking (DDM)
+ALTER TABLE Customer
+ALTER COLUMN Phone varchar(20) MASKED WITH (FUNCTION = 'partial(2,"XXXXX",2)') NULL;
+GO
+
+ALTER TABLE Staff
+ALTER COLUMN Salary decimal(10,2) MASKED WITH (FUNCTION = 'random(1000, 9999)') NULL;
+GO
+
+
+
+
+-- Server level audit
+CREATE SERVER AUDIT SmartBankAudit
+TO FILE (FILEPATH = 'C:\SQLAudit');
+GO
+AlTER SERVER AUDIT SmartBankAudit WITH (STATE = ON);
+GO
+
+USE SmartBankDB;
+GO
+CREATE DATABASE AUDIT SPECIFICATION SmartBankReadAudit
+FOR SERVER AUDIT SmartBankAudit
+ADD (SELECT ON OBJECT::dbo.vw_AllTransactions BY bank_manager, bank_officer),
+ADD (SELECT ON OBJECT::dbo.vw_AllCustomer     BY bank_manager, bank_officer),
+ADD (SELECT ON OBJECT::dbo.vw_AllBankOfficers BY bank_manager)
+WITH (STATE = ON);
+GO
+
+
+
+-- Test as Bank Manager
+EXECUTE AS LOGIN = 'BM00001';
+SELECT * FROM vw_MyStaffRecord;   -- should return only BM001's row
+SELECT * FROM Staff;  -- should fail (denied)
+SELECT SUSER_SNAME()
+REVERT;
+GO
+
+EXECUTE AS LOGIN = 'C00001';
+SELECT * FROM vw_MyStaffRecord;
+REVERT;
+GO
+
+SELECT SUSER_NAMES()

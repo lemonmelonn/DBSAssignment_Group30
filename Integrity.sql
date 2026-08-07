@@ -80,7 +80,7 @@ BEGIN
         VALUES ('INSERT', 'Staff', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
 		THROW
 	END CATCH
-END
+
 GO
 
 -- Update Bank Officer details
@@ -149,6 +149,17 @@ GRANT EXECUTE ON sp_DeleteBankOfficer TO bank_manager
 
 -- 3. Only Bank Officers may manage customer accounts.
 -- Insert New Customer
+-- Encryption
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = 'Str0ng!MasterKeyPwd123';
+GO
+CREATE CERTIFICATE CustomerICCert WITH SUBJECT = 'Customer IC Number Encryption';
+GO
+CREATE SYMMETRIC KEY CustomerICKey
+WITH ALGORITHM = AES_256
+ENCRYPTION BY CERTIFICATE CustomerICCert;
+GO
+
+
 CREATE PROCEDURE sp_InsertCustomer
 	@CustomerName	varchar(100),
 	@ICNumber		varchar(20),
@@ -164,13 +175,21 @@ BEGIN
             CAST(ISNULL(MAX(CAST(SUBSTRING(CustomerID,2,LEN(CustomerID)) AS INT)), 0) + 1 AS varchar(10)), 5)
         FROM Customer;
 
+        OPEN SYMMETRIC KEY CustomerICKey DECRYPTION BY CERTIFICATE CustomerICCert;
+
 		INSERT INTO Customer(CustomerID, CustomerName, ICNumber, Phone, Address)
-		VALUES(@NewID, @CustomerName, @ICNumber, @Phone, @Address);
+		VALUES(@NewID, @CustomerName, ENCRYPTBYKEY(KEY_GUID('CustomerICKey'), @ICNumber), @Phone, @Address);
+        
+        CLOSE SYMMETRIC KEY CustomerICKey;
 
 		INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
         VALUES ('INSERT', 'Customer', SUSER_SNAME(), 'Success', 'Created CustomerID=' + @NewID);
     END TRY
     BEGIN CATCH
+        -- Close Symmetric Key if error happens when inserting
+        IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = 'CustomerICKey')
+            CLOSE SYMMETRIC KEY CustomerICKey;
+
         INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
         VALUES ('INSERT', 'Customer', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
         THROW;
@@ -200,7 +219,19 @@ BEGIN
             CAST(ISNULL(MAX(CAST(SUBSTRING(AccountID,2,LEN(AccountID)) AS INT)), 0) + 1 AS varchar(10)), 9)
         FROM Account;
         
-        INSERT INTO Account(AccountID, CustomerID, AccountType, Balance, PinHash)
+        INSERT INTO Account(AccountID, CustomerID, AccountType, Balance, PinHash, PinSalt)
+        VALUES(@NewID, @CustomerID, @AccountType, 0.00, HASHBYTES('SHA2_256', CONCAT(@Pin, @Salt)),@Salt);
+
+        INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
+        VALUES ('INSERT', 'Account', SUSER_SNAME(), 'Success', 'Created AccountID=' + @NewID);
+    END TRY
+    BEGIN CATCH
+        INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
+        VALUES ('INSERT', 'Account', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
+        THROW;
+    END CATCH
+END
+GO
 
 
 -- Update Customer details'
@@ -245,7 +276,7 @@ BEGIN
 		IF NOT EXISTS (SELECT 1 FROM Customer WHERE CustomerID = @CustomerID)
             THROW 50020, 'Customer record not found', 1;
 
-		DELETE FROM Customemr WHERE CustomerID = @CustomerID;
+		DELETE FROM Customer WHERE CustomerID = @CustomerID;
 
 		INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
         VALUES ('DELETE', 'Customer', SUSER_SNAME(), 'Success', 'Deleted CustomerID=' + @CustomerID);
@@ -303,20 +334,25 @@ END
 GO 
 
 CREATE PROCEDURE sp_Withdraw
-    @AccountID varchar(10)
-    @Amount decimal (12,2)
+    @AccountID varchar(10),
+    @Amount decimal (12,2),
+    @Pin char(6)
 AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @OwnerID varchar(6);
+    DECLARE @Owner varchar(6);
+    DECLARE @StoredHash varbinary(64);
+    DECLARE @StoreSalt varbinary(16);
 
     BEGIN TRY
-        Select @Owner = CustomerID FROM Account WHERE AccountID = @AccountID;
+        Select @Owner = CustomerID, @StoredHash = PinHash, @StoreSalt = PinSalt FROM Account WHERE AccountID = @AccountID;
 
         IF @Owner IS NULL
             THROW 50030, 'Account does not exist', 1
         IF @Owner <> SUSER_SNAME()
             THROW 50031, 'Access denied: not your account',1;
+        IF HASHBYTES('SHA2_256', CONCAT(@Pin, @StoreSalt)) <> @StoredHash
+            THROW 50035, 'Incorrect Pin', 1;
         IF @Amount <= 0
             THROW 50032, 'Invalid amount', 1;
         IF (SELECT Balance FROM Account WHERE AccountID = @AccountID) < @Amount
@@ -345,21 +381,26 @@ GO
 CREATE PROCEDURE sp_Transfer
     @AccountID      varchar(10),
     @ToAccountID    varchar(10),
-    @Amount         decimal(12,2)
+    @Amount         decimal(12,2),
+    @Pin            char(6)
 AS
 BEGIN
     SET NOCOUNT ON;
-    DECLARE @Owner  varchar(6);
+    DECLARE @Owner      varchar(6);
+    DECLARE @StoredHash varbinary(64);
+    DECLARE @StoredSalt varbinary(16);
 
     BEGIN TRY
-        SELECT @Owner = CustomerID FROM Account WHERE AccountID = @AccountID;
+        SELECT @Owner = CustomerID, @StoredHash = PinHash, @StoredSalt = PinSalt FROM Account WHERE AccountID = @AccountID;
 
         IF @Owner IS NULL
             THROW 50030, 'Account does not exist', 1;
         IF NOT EXISTS (SELECT AccountID FROM Account WHERE AccountID = @ToAccountID)
-            THROW 50030, 'Account does not exist', 1;
+            THROW 50030, 'Destination account does not exist', 1;
         IF @Owner <> SUSER_SNAME()
             THROW 50031, 'Access denied: not your account', 1;
+        IF HASHBYTES('SHA2_256', CONCAT(@Pin, @StoredSalt)) <> @StoredHash
+            THROW 50035, 'Incorrect PIN', 1;
         IF @Amount <= 0
             THROW 50032, 'Invalid amount', 1;
         IF (SELECT Balance FROM Account WHERE AccountID = @AccountID) < @Amount
@@ -392,3 +433,37 @@ GO
 GRANT EXECUTE ON sp_Deposit  TO customer;
 GRANT EXECUTE ON sp_Withdraw TO customer;
 GRANT EXECUTE ON sp_Transfer TO customer;
+GO
+
+CREATE SERVER AUDIT SmartBankAudit
+TO FILE (FILEPATH = 'C:\SQLAudit\');
+GO
+ALTER SERVER AUDIT SmartBankAudit WITH (STATE = ON);
+GO
+CREATE SERVER AUDIT SPECIFICATION SmartBankServerAudit
+FOR SERVER AUDIT SmartBankAudit
+    ADD (FAILED_LOGIN_GROUP),
+    ADD (SUCCESSFUL_LOGIN_GROUP),
+    ADD (SERVER_ROLE_MEMBER_CHANGE_GROUP),
+    ADD (DATABASE_ROLE_MEMBER_CHANGE_GROUP)
+WITH (STATE = ON);
+GO
+
+USE SmartBankDB;
+GO
+
+CREATE DATABASE AUDIT SPECIFICATION SmartBankProcedureAudit
+FOR SERVER AUDIT SmartBankAudit
+    ADD (EXECUTE ON OBJECT::dbo.sp_UpdateOwnStaffRecord BY db_admin, bank_manager, bank_officer),
+    ADD (EXECUTE ON OBJECT::dbo.sp_InsertBankOfficer     BY bank_manager),
+    ADD (EXECUTE ON OBJECT::dbo.sp_UpdateBankOfficer     BY bank_manager),
+    ADD (EXECUTE ON OBJECT::dbo.sp_DeleteBankOfficer     BY bank_manager),
+    ADD (EXECUTE ON OBJECT::dbo.sp_InsertCustomer        BY bank_officer),
+    ADD (EXECUTE ON OBJECT::dbo.sp_UpdateCustomer        BY bank_officer),
+    ADD (EXECUTE ON OBJECT::dbo.sp_DeleteCustomer        BY bank_officer),
+    ADD (EXECUTE ON OBJECT::dbo.sp_CreateAccount         BY bank_officer),
+    ADD (EXECUTE ON OBJECT::dbo.sp_Deposit               BY customer),
+    ADD (EXECUTE ON OBJECT::dbo.sp_Withdraw              BY customer),
+    ADD (EXECUTE ON OBJECT::dbo.sp_Transfer              BY customer)
+WITH (STATE = ON);
+GO
