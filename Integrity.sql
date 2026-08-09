@@ -14,8 +14,9 @@ CREATE TABLE AuditLog(
 GO
 
 -- 1. Only DBAs may create and manage tables (not data)
-GRANT CREATE, ALTER TABLE TO db_admin;
-DENY  CREATE, ALTER TABLE TO bank_manager, bank_officer, customer;
+GRANT CREATE TABLE, ALTER ANY SCHEMA TO db_admin;
+DENY CREATE TABLE, ALTER ANY SCHEMA TO bank_manager, bank_officer, customer;
+
 -- Lock down base-table DML for everyone; all writes must go through procs.
 DENY INSERT, UPDATE, DELETE ON Staff TO bank_manager, bank_officer, customer, db_admin;
 DENY INSERT, UPDATE, DELETE ON Customer TO bank_manager, bank_officer, customer, db_admin;
@@ -34,7 +35,7 @@ BEGIN
 	SET NOCOUNT ON;
 	BEGIN TRY
 		UPDATE Staff
-		SET StaffName = ISNULL(@StaffName, StaffName)
+		SET StaffName = ISNULL(@StaffName, StaffName),
             Phone = ISNULL(@Phone, Phone),
 			Branch = ISNULL(@Branch, Branch)
 		WHERE StaffID = SUSER_SNAME();
@@ -50,6 +51,7 @@ BEGIN
 END
 GO
 GRANT EXECUTE ON sp_UpdateOwnStaffRecord TO db_admin, bank_manager, bank_officer;
+GO
 
 -- 2. Only Bank Managers may manage staff details
 -- Insert Bank Officer details
@@ -73,14 +75,14 @@ BEGIN
 		VALUES (@NewID, @StaffName, 'Bank Officer', @Branch, @Phone, @Salary);
 
 		INSERT INTO AuditLog (ActionType, TableName, PerformedBy, Status, Details)
-		VALUES ('INSERT', 'STAFF', SUSER_SNAME(), 'Sucecess', 'Created StaffID=' + @NewID);
+		VALUES ('INSERT', 'STAFF', SUSER_SNAME(), 'Success', 'Created StaffID=' + @NewID);
 	END TRY
 	BEGIN CATCH
 		INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
         VALUES ('INSERT', 'Staff', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
 		THROW
 	END CATCH
-
+END
 GO
 
 -- Update Bank Officer details
@@ -145,7 +147,7 @@ GO
 
 GRANT EXECUTE ON sp_InsertBankOfficer TO bank_manager;
 GRANT EXECUTE ON sp_UpdateBankOfficer TO bank_manager;
-GRANT EXECUTE ON sp_DeleteBankOfficer TO bank_manager
+GRANT EXECUTE ON sp_DeleteBankOfficer TO bank_manager;
 
 -- 3. Only Bank Officers may manage customer accounts.
 -- Insert New Customer
@@ -159,6 +161,9 @@ WITH ALGORITHM = AES_256
 ENCRYPTION BY CERTIFICATE CustomerICCert;
 GO
 
+GRANT CONTROL ON CERTIFICATE::CustomerICCert TO bank_officer;
+GRANT CONTROL ON SYMMETRIC KEY::CustomerICKey TO bank_officer;
+GO
 
 CREATE PROCEDURE sp_InsertCustomer
 	@CustomerName	varchar(100),
@@ -171,11 +176,17 @@ BEGIN
 	DECLARE @NewID varchar(6);
 
 	BEGIN TRY
+        OPEN SYMMETRIC KEY CustomerICKey DECRYPTION BY CERTIFICATE CustomerICCert;
+        
+        IF EXISTS (SELECT 1 FROM Customer WHERE CONVERT(varchar(20), DECRYPTBYKEY(ICNumber)) = @ICNumber)
+        BEGIN
+            CLOSE SYMMETRIC KEY CustomerICKey;
+            THROW 50021, 'A customer with this IC Number already exists', 1;
+        END
+
 		SELECT @NewID = 'C' + RIGHT('0000' +
             CAST(ISNULL(MAX(CAST(SUBSTRING(CustomerID,2,LEN(CustomerID)) AS INT)), 0) + 1 AS varchar(10)), 5)
         FROM Customer;
-
-        OPEN SYMMETRIC KEY CustomerICKey DECRYPTION BY CERTIFICATE CustomerICCert;
 
 		INSERT INTO Customer(CustomerID, CustomerName, ICNumber, Phone, Address)
 		VALUES(@NewID, @CustomerName, ENCRYPTBYKEY(KEY_GUID('CustomerICKey'), @ICNumber), @Phone, @Address);
@@ -205,7 +216,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
     DECLARE @NewID  varchar(10);
-    DECLARE @Salt UNIQUEIDENTIFIER = NEWID();
+    DECLARE @Salt varbinary(16) = CRYPT_GEN_RANDOM(16);
 
     BEGIN TRY
         IF NOT EXISTS (SELECT 1 FROM Customer WHERE CustomerID = @CustomerID)
@@ -248,17 +259,23 @@ BEGIN
         IF NOT EXISTS (SELECT 1 FROM Customer WHERE CustomerID = @CustomerID)
             THROW 50020, 'Customer record not found', 1;
 
+        OPEN SYMMETRIC KEY CustomerICKey DECRYPTION BY CERTIFICATE CustomerICCert; 
+
         UPDATE Customer
         SET CustomerName = ISNULL(@CustomerName, CustomerName),
-            ICNumber     = ISNULL(@ICNumber, ICNumber),
+            ICNumber     = ISNULL(ENCRYPTBYKEY(KEY_GUID('CustomerICKey'), @ICNumber), ICNumber),
             Phone        = ISNULL(@Phone, Phone),
             Address      = ISNULL(@Address, Address)
         WHERE CustomerID = @CustomerID;
+
+        CLOSE SYMMETRIC KEY CustomerICKey;
 
         INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
         VALUES ('UPDATE', 'Customer', SUSER_SNAME(), 'Success', 'Updated CustomerID=' + @CustomerID);
     END TRY
     BEGIN CATCH
+        IF EXISTS (SELECT 1 FROM sys.openkeys WHERE key_name = 'CustomerICKey')
+            CLOSE SYMMETRIC KEY CustomerICKey;
         INSERT INTO AuditLog(ActionType, TableName, PerformedBy, Status, Details)
         VALUES ('UPDATE', 'Customer', SUSER_SNAME(), 'Failed', ERROR_MESSAGE());
         THROW;
@@ -292,6 +309,7 @@ GO
 GRANT EXECUTE ON sp_InsertCustomer TO bank_officer;
 GRANT EXECUTE ON sp_UpdateCustomer TO bank_officer;
 GRANT EXECUTE ON sp_DeleteCustomer TO bank_officer;
+GRANT EXECUTE ON sp_CreateAccount TO bank_officer;
 GO
 
 -- 5. Only Customers may perform transactions. Valid transactions are deposit, withdrawal, and transfer.
@@ -348,7 +366,7 @@ BEGIN
         Select @Owner = CustomerID, @StoredHash = PinHash, @StoreSalt = PinSalt FROM Account WHERE AccountID = @AccountID;
 
         IF @Owner IS NULL
-            THROW 50030, 'Account does not exist', 1
+            THROW 50030, 'Account does not exist',1;
         IF @Owner <> SUSER_SNAME()
             THROW 50031, 'Access denied: not your account',1;
         IF HASHBYTES('SHA2_256', CONCAT(@Pin, @StoreSalt)) <> @StoredHash
@@ -356,7 +374,7 @@ BEGIN
         IF @Amount <= 0
             THROW 50032, 'Invalid amount', 1;
         IF (SELECT Balance FROM Account WHERE AccountID = @AccountID) < @Amount
-            THROW 50033, 'Insuffiecient amount', 1;
+            THROW 50033, 'Insufficient amount', 1;
         
         BEGIN TRANSACTION;
         UPDATE Account 
@@ -404,7 +422,7 @@ BEGIN
         IF @Amount <= 0
             THROW 50032, 'Invalid amount', 1;
         IF (SELECT Balance FROM Account WHERE AccountID = @AccountID) < @Amount
-            THROW 50033, 'Insuffiecient amount', 1;
+            THROW 50033, 'Insufficient amount', 1;
         IF  @ToAccountID = @AccountID
             THROW 50034, 'Cannot transfer to the same account', 1;
         
@@ -435,6 +453,8 @@ GRANT EXECUTE ON sp_Withdraw TO customer;
 GRANT EXECUTE ON sp_Transfer TO customer;
 GO
 
+USE master
+GO
 CREATE SERVER AUDIT SmartBankAudit
 TO FILE (FILEPATH = 'C:\SQLAudit\');
 GO

@@ -46,22 +46,6 @@ CREATE ROLE bank_manager;
 CREATE ROLE bank_officer;
 CREATE ROLE customer;
 
--- Create Login
-CREATE LOGIN [BM00001] WITH PASSWORD = 'BM00001PWD';
-CREATE USER [BM00001] FOR LOGIN [BM00001];
-ALTER ROLE bank_manager ADD MEMBER [BM00001];
-GO
-
-CREATE LOGIN [BO00001] WITH PASSWORD = 'BO00001PWD';
-CREATE USER  [BO00001] FOR LOGIN [BO00001];
-ALTER ROLE bank_officer ADD MEMBER [BO00001];
-GO
-
-CREATE LOGIN [C00001] WITH PASSWORD = 'C00001PWD';
-CREATE USER  [C00001] FOR LOGIN [C00001];
-ALTER ROLE customer ADD MEMBER [C00001];
-GO
-
 
 -- All user can access this view
 CREATE VIEW vw_StaffPublic
@@ -113,9 +97,11 @@ GO
 
 -- 2. View all customer accounts
 GRANT SELECT ON vw_AllCustomer TO bank_officer;
+GO
 
 -- 3. View all transactions
 GRANT SELECT ON vw_AllTransactions TO bank_officer;
+GO
 
 ------------- Database Admin (DBA) permissions -------------
 -- 1. View only their own record (reuse)
@@ -134,8 +120,9 @@ GO
 --2. View only their own transactions
 CREATE VIEW vw_MyTransactionRecords
 AS
-SELECT * FROM TransactionRecord t
-JOIN Account a on t.AccountID = a.AccountID
+SELECT t.TransID, t.AccountID, t.TransDate, t.Amount, t.TransactionType
+FROM TransactionRecord t
+JOIN Account a ON t.AccountID = a.AccountID
 WHERE a.CustomerID = SUSER_SNAME();
 GO
 
@@ -153,12 +140,15 @@ ALTER TABLE Staff
 ALTER COLUMN Salary decimal(10,2) MASKED WITH (FUNCTION = 'random(1000, 9999)') NULL;
 GO
 
-
+GRANT UNMASK ON Staff(Salary) TO bank_manager;
 
 
 -- Server level audit
+USE master;
+GO
+
 CREATE SERVER AUDIT SmartBankAudit
-TO FILE (FILEPATH = 'C:\SQLAudit');
+TO FILE (FILEPATH = 'C:\SQLAssignment\SQLAudit');
 GO
 AlTER SERVER AUDIT SmartBankAudit WITH (STATE = ON);
 GO
@@ -173,10 +163,28 @@ ADD (SELECT ON OBJECT::dbo.vw_AllBankOfficers BY bank_manager)
 WITH (STATE = ON);
 GO
 
+-- Encrypt Server
+/*
+USE master;
+GO
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = 'Str0ng!ServerMasterKeyPwd123';
+GO
+CREATE CERTIFICATE SmartBankTDECert WITH SUBJECT = 'SmartBankDB TDE Certificate';
+GO
+
+USE SmartBankDB;
+GO
+CREATE DATABASE ENCRYPTION KEY
+WITH ALGORITHM = AES_256
+ENCRYPTION BY SERVER CERTIFICATE SmartBankTDECert;
+GO
+ALTER DATABASE SmartBankDB SET ENCRYPTION ON;
+GO
+*/
 
 
 -- Test as Bank Manager
-EXECUTE AS LOGIN = 'BM00001';
+EXECUTE AS LOGIN = 'BM0001';
 SELECT * FROM vw_MyStaffRecord;   -- should return only BM001's row
 SELECT * FROM Staff;  -- should fail (denied)
 SELECT SUSER_SNAME()
@@ -188,4 +196,4 @@ SELECT * FROM vw_MyStaffRecord;
 REVERT;
 GO
 
-SELECT SUSER_NAMES()
+SELECT SUSER_SNAME()
