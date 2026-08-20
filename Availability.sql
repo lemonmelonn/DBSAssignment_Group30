@@ -1,6 +1,5 @@
-
 ---------------------------------------------------------------
--- 1. SET DATABASE TO FULL RECOVERY MODEL
+-- SET DATABASE TO FULL RECOVERY MODEL
 ---------------------------------------------------------------
 
 USE master;
@@ -10,6 +9,15 @@ ALTER DATABASE SmartBankDB
 SET RECOVERY FULL;
 GO
 
+---------------------------------------------------------------
+-- Backup Encryption setup
+---------------------------------------------------------------
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = 'SmartBank@2026SecureKey!';
+GO
+
+CREATE CERTIFICATE SmartBankBackupCert
+WITH SUBJECT = 'Certificate for SmartBankDB Backup Encryption';
+GO
 
 ---------------------------------------------------------------
 -- 1. CREATE FULL BACKUP JOB
@@ -35,8 +43,13 @@ EXEC dbo.sp_add_jobstep
 BACKUP DATABASE SmartBankDB
 TO DISK = ''C:\SQLAssignment\SQLBackups\SmartBankDB_Full.bak''
 WITH INIT,
+     COMPRESSION,
+     ENCRYPTION (
+         ALGORITHM = AES_256,
+         SERVER CERTIFICATE = SmartBankBackupCert
+     ),
      NAME = ''SmartBankDB-Full'',
-     DESCRIPTION = ''Weekly full backup of SmartBankDB'';
+     DESCRIPTION = ''Weekly encrypted full backup of SmartBankDB'';
 ';
 GO
 
@@ -84,8 +97,13 @@ BACKUP DATABASE SmartBankDB
 TO DISK = ''C:\SQLAssignment\SQLBackups\SmartBankDB_Diff.bak''
 WITH DIFFERENTIAL,
      INIT,
+     COMPRESSION,
+     ENCRYPTION (
+         ALGORITHM = AES_256,
+         SERVER CERTIFICATE = SmartBankBackupCert
+     ),
      NAME = ''SmartBankDB-Differential'',
-     DESCRIPTION = ''Daily differential backup of SmartBankDB'';
+     DESCRIPTION = ''Daily encrypted differential backup of SmartBankDB'';
 ';
 GO
 
@@ -131,9 +149,14 @@ EXEC dbo.sp_add_jobstep
     @command = N'
 BACKUP LOG SmartBankDB
 TO DISK = ''C:\SQLAssignment\SQLBackups\SmartBankDB_Log.trn''
-WITH NOINIT,
+WITH INIT,
+     COMPRESSION,
+     ENCRYPTION (
+         ALGORITHM = AES_256,
+         SERVER CERTIFICATE = SmartBankBackupCert
+     ),
      NAME = ''SmartBankDB-Transaction Log'',
-     DESCRIPTION = ''Transaction log backup of SmartBankDB'';
+     DESCRIPTION = ''Encrypted transaction log backup of SmartBankDB'';
 ';
 GO
 
@@ -192,6 +215,120 @@ FROM dbo.sysschedules
 WHERE name LIKE 'SmartBankDB -%';
 GO
 
--- Recovery Demo
 
---- Encryp Backup
+-- Recovery Demo
+------------------------------------------------------
+USE SmartBankDB
+select * from Account
+
+-- 1. Full Backup
+USE msdb;
+GO
+EXEC dbo.sp_start_job
+    @job_name = N'SmartBankDB - Full Backup';
+GO
+
+-- Check whether backup is encrypted
+RESTORE HEADERONLY
+    FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Full.bak';
+GO
+
+-- 2. Test change
+USE SmartBankDB;
+GO
+
+UPDATE Account
+SET Balance = Balance + 10
+WHERE AccountID = 'A000000001';
+GO
+
+-- 3. Differential 
+USE msdb;
+GO
+EXEC dbo.sp_start_job
+    @job_name = N'SmartBankDB - Differential Backup';
+GO
+
+-- 4. Test another change
+USE SmartBankDB;
+GO
+
+UPDATE Account
+SET Balance = Balance + 30
+WHERE AccountID = 'A000000001';
+GO
+
+-- 5. Log Backup
+USE msdb;
+GO
+EXEC dbo.sp_start_job
+    @job_name = N'SmartBankDB - Transaction Log Backup';
+GO
+
+-- 6. Simulate data loss
+USE SmartBankDB;
+GO
+
+UPDATE Account
+SET Balance = 0
+WHERE AccountID = 'A000000001';
+GO
+
+SELECT AccountID, Balance
+FROM Account
+WHERE AccountID = 'A000000001';
+GO
+
+-- 7.  Restore
+RESTORE DATABASE SmartBankDB_Recovery
+FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Full.bak'
+WITH
+    MOVE 'SmartBankDB'
+    TO 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\SmartBankDB_Recovery.mdf',
+
+    MOVE 'SmartBankDB_log'
+    TO 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\SmartBankDB_Recovery_log.ldf',
+
+    NORECOVERY;
+GO
+
+RESTORE DATABASE SmartBankDB_Recovery
+FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Diff.bak'
+WITH NORECOVERY;
+GO
+
+RESTORE LOG SmartBankDB_Recovery
+FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Log.trn'
+WITH RECOVERY;
+GO
+
+-- 8. Check Restore Database (Should be the value when transaction log backup activate)
+USE SmartBankDB_Recovery;
+GO
+
+SELECT AccountID, Balance
+FROM Account
+WHERE AccountID = 'A000000001';
+GO
+
+-- 9. Recover to SmartBank_DB
+-- Disconnet all uses
+ALTER DATABASE SmartBankDB
+SET SINGLE_USER
+WITH ROLLBACK IMMEDIATE;
+GO
+-- Rename damaged database
+ALTER DATABASE SmartBankDB
+MODIFY NAME = SmartBankDB_Damaged;
+GO
+-- Rename recover database
+ALTER DATABASE SmartBankDB_Recovery
+MODIFY NAME = SmartBankDB;
+GO
+-- Set to multi user
+ALTER DATABASE SmartBankDB
+SET MULTI_USER;
+GO
+-- Verify
+Use SmartBankDB
+Select * From Account
