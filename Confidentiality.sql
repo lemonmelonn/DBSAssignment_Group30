@@ -72,10 +72,11 @@ SELECT * FROM Staff
 WHERE Position = 'Bank Officer';
 GO
 
--- 3. View all customer accounts **(Need to join with account table?)
-CREATE VIEW vw_AllCustomer
+-- 3. View all customer accounts
+CREATE VIEW vw_AllCustomerAccount
 AS
-SELECT * FROM Customer;
+SELECT c.CustomerID, c.CustomerName, a.AccountID, a.AccountType, a.Balance FROM Customer c
+JOIN Account a on c.CustomerID = a.CustomerID;
 GO
 
 -- 4. View all transactions
@@ -87,7 +88,7 @@ GO
 -- Grant permissions to the bank_manager role
 GRANT SELECT ON vw_MyStaffRecord TO bank_manager;
 GRANT SELECT ON vw_AllBankOfficers TO bank_manager;
-GRANT SELECT ON vw_AllCustomer TO bank_manager;
+GRANT SELECT ON vw_AllCustomerAccount TO bank_manager;
 GRANT SELECT ON vw_AllTransactions TO bank_manager;
 
 ------------- Bank Officers Permissions -------------
@@ -96,7 +97,7 @@ GRANT SELECT ON vw_MyStaffRecord TO bank_officer;
 GO
 
 -- 2. View all customer accounts
-GRANT SELECT ON vw_AllCustomer TO bank_officer;
+GRANT SELECT ON vw_AllCustomerAccount TO bank_officer;
 GO
 
 -- 3. View all transactions
@@ -111,23 +112,73 @@ GO
 
 ------------- Customer Permissions -------------
 -- 1. View only their own record
-CREATE VIEW vw_MyCustomerAccounts
+-- Security Policy
+CREATE SCHEMA Security;
+GO
+-- Customer
+CREATE FUNCTION Security.fn_CustomerAccessPredicate(@CustomerID varchar(6))
+RETURNS TABLE
+WITH SCHEMABINDING
 AS
-SELECT * FROM Customer
-WHERE CustomerID = SUSER_SNAME();
+RETURN SELECT 1 AS fn_result
+WHERE
+    IS_SRVROLEMEMBER('sysadmin') = 1
+    OR IS_MEMBER('bank_manager') = 1
+    OR IS_MEMBER('bank_officer') = 1
+    OR @CustomerID = SUSER_SNAME();
+GO
+
+CREATE SECURITY POLICY Security.CustomerFilter
+ADD FILTER PREDICATE Security.fn_CustomerAccessPredicate(CustomerID)
+ON dbo.Customer
+WITH (STATE = ON);
+GO
+
+-- Account
+CREATE FUNCTION Security.fn_AccountAccessPredicate(@CustomerID varchar(6))
+RETURNS TABLE
+WITH SCHEMABINDING
+AS
+RETURN SELECT 1 AS fn_result
+WHERE
+    IS_SRVROLEMEMBER('sysadmin') = 1
+    OR IS_MEMBER('bank_manager') = 1
+    OR IS_MEMBER('bank_officer') = 1
+    OR @CustomerID = SUSER_SNAME();
+GO
+
+CREATE SECURITY POLICY Security.AccountFilter
+ADD FILTER PREDICATE Security.fn_AccountAccessPredicate(CustomerID)
+ON dbo.Account
+WITH (STATE = ON);
 GO
 
 --2. View only their own transactions
-CREATE VIEW vw_MyTransactionRecords
+-- TransactionRecord
+CREATE FUNCTION Security.fn_TransactionAccessPredicate(@AccountID varchar(10))
+RETURNS TABLE
+WITH SCHEMABINDING
 AS
-SELECT t.TransID, t.AccountID, t.TransDate, t.Amount, t.TransactionType
-FROM TransactionRecord t
-JOIN Account a ON t.AccountID = a.AccountID
-WHERE a.CustomerID = SUSER_SNAME();
+RETURN SELECT 1 AS fn_result
+WHERE
+    IS_SRVROLEMEMBER('sysadmin') = 1
+    OR IS_MEMBER('bank_manager') = 1
+    OR IS_MEMBER('bank_officer') = 1
+    OR EXISTS (
+        SELECT 1 FROM dbo.Account a
+        WHERE a.AccountID = @AccountID AND a.CustomerID = SUSER_SNAME()
+    );
 GO
 
-GRANT SELECT ON vw_MyCustomerAccounts   TO customer;
-GRANT SELECT ON vw_MyTransactionRecords TO customer;
+CREATE SECURITY POLICY Security.TransactionFilter
+ADD FILTER PREDICATE Security.fn_TransactionAccessPredicate(AccountID)
+ON dbo.TransactionRecord
+WITH (STATE = ON);
+GO
+
+GRANT SELECT ON dbo.Customer TO customer;
+GRANT SELECT ON dbo.Account TO customer;
+GRANT SELECT ON dbo.TransactionRecord TO customer;
 
 -----------------------------------------------------------------------------------------
 --- Data Protection
@@ -158,7 +209,7 @@ GO
 CREATE DATABASE AUDIT SPECIFICATION SmartBankReadAudit
 FOR SERVER AUDIT SmartBankAudit
 ADD (SELECT ON OBJECT::dbo.vw_AllTransactions BY bank_manager, bank_officer),
-ADD (SELECT ON OBJECT::dbo.vw_AllCustomer     BY bank_manager, bank_officer),
+ADD (SELECT ON OBJECT::dbo.vw_AllCustomerAccount BY bank_manager, bank_officer),
 ADD (SELECT ON OBJECT::dbo.vw_AllBankOfficers BY bank_manager)
 WITH (STATE = ON);
 GO
@@ -181,19 +232,3 @@ GO
 ALTER DATABASE SmartBankDB SET ENCRYPTION ON;
 GO
 */
-
-
--- Test as Bank Manager
-EXECUTE AS LOGIN = 'BM0001';
-SELECT * FROM vw_MyStaffRecord;   -- should return only BM001's row
-SELECT * FROM Staff;  -- should fail (denied)
-SELECT SUSER_SNAME()
-REVERT;
-GO
-
-EXECUTE AS LOGIN = 'C00001';
-SELECT * FROM vw_MyStaffRecord;
-REVERT;
-GO
-
-SELECT SUSER_SNAME()

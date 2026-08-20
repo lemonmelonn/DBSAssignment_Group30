@@ -453,12 +453,18 @@ GRANT EXECUTE ON sp_Withdraw TO customer;
 GRANT EXECUTE ON sp_Transfer TO customer;
 GO
 
-USE master
+------------------------------------------
+-- Audit server
+USE master;
 GO
+
 CREATE SERVER AUDIT SmartBankAudit
-TO FILE (FILEPATH = 'C:\SQLAudit\');
+TO FILE (FILEPATH = 'C:\SQLAssignment\SQLAudit');
 GO
-ALTER SERVER AUDIT SmartBankAudit WITH (STATE = ON);
+AlTER SERVER AUDIT SmartBankAudit WITH (STATE = ON);
+GO
+
+USE master
 GO
 CREATE SERVER AUDIT SPECIFICATION SmartBankServerAudit
 FOR SERVER AUDIT SmartBankAudit
@@ -474,6 +480,13 @@ GO
 
 CREATE DATABASE AUDIT SPECIFICATION SmartBankProcedureAudit
 FOR SERVER AUDIT SmartBankAudit
+
+-- Confidentiality: sensitive read access
+    ADD (SELECT ON OBJECT::dbo.vw_AllTransactions BY bank_manager, bank_officer),
+    ADD (SELECT ON OBJECT::dbo.vw_AllCustomerAccount BY bank_manager, bank_officer),
+    ADD (SELECT ON OBJECT::dbo.vw_AllBankOfficers BY bank_manager),
+
+-- Integrity: stored procedure execution
     ADD (EXECUTE ON OBJECT::dbo.sp_UpdateOwnStaffRecord BY db_admin, bank_manager, bank_officer),
     ADD (EXECUTE ON OBJECT::dbo.sp_InsertBankOfficer     BY bank_manager),
     ADD (EXECUTE ON OBJECT::dbo.sp_UpdateBankOfficer     BY bank_manager),
@@ -485,5 +498,7 @@ FOR SERVER AUDIT SmartBankAudit
     ADD (EXECUTE ON OBJECT::dbo.sp_Deposit               BY customer),
     ADD (EXECUTE ON OBJECT::dbo.sp_Withdraw              BY customer),
     ADD (EXECUTE ON OBJECT::dbo.sp_Transfer              BY customer)
+
 WITH (STATE = ON);
 GO
+

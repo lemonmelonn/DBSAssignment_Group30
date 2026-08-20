@@ -31,6 +31,11 @@ CREATE USER  [BO0001] FOR LOGIN [BO0001];
 ALTER ROLE bank_officer ADD MEMBER [BO0001];
 GO
 
+CREATE LOGIN [BO0002] WITH PASSWORD = 'BO0002!Pwd';
+CREATE USER  [BO0002] FOR LOGIN [BO0002];
+ALTER ROLE bank_officer ADD MEMBER [BO0002];
+GO
+
 ------------------------------------------------------------------
 -- Insert sample customer though bank officer
 EXECUTE AS LOGIN = 'BO0001';
@@ -48,10 +53,11 @@ EXEC sp_InsertCustomer
     @Address      = '45 Jalan Ceria, Melaka';
 
 select * from vw_MyStaffRecord
-select * from vw_AllCustomer
+select * from vw_AllCustomerAccount
 select * from vw_AllTransactions
 select * from vw_StaffPublic
 
+SELECT SUSER_NAME()
 REVERT;
 GO
 
@@ -86,6 +92,7 @@ GO
 -- Demo as customer
 EXECUTE AS LOGIN = 'C00001';
 EXEC sp_Deposit @AccountID = 'A000000001', @Amount = 500.00;
+SELECT * FROM Account
 REVERT;
 GO
 
@@ -95,7 +102,7 @@ REVERT;
 GO
 
 EXECUTE AS LOGIN = 'C00001';
-EXEC sp_Withdraw @AccountID = 'A000000001', @Amount = 100.00, @Pin = '123456';
+EXEC sp_Withdraw @AccountID = 'A000000001', @Amount = 1000.00, @Pin = '123456';
 REVERT;
 GO
 
