@@ -313,6 +313,7 @@ GO
 
 -- 9. Recover to SmartBank_DB
 -- Disconnet all uses
+USE master
 ALTER DATABASE SmartBankDB
 SET SINGLE_USER
 WITH ROLLBACK IMMEDIATE;

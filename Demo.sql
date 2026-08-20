@@ -53,7 +53,7 @@ EXEC sp_InsertCustomer
     @Address      = '45 Jalan Ceria, Melaka';
 
 select * from vw_MyStaffRecord
-select * from vw_AllCustomerAccount
+select * from vw_AllCustomerAccount -- (Need to insert account)
 select * from vw_AllTransactions
 select * from vw_StaffPublic
 
