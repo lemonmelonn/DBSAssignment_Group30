@@ -149,7 +149,8 @@ EXEC dbo.sp_add_jobstep
     @command = N'
 BACKUP LOG SmartBankDB
 TO DISK = ''C:\SQLAssignment\SQLBackups\SmartBankDB_Log.trn''
-WITH INIT,
+WITH FORMAT,
+     INIT,
      COMPRESSION,
      ENCRYPTION (
          ALGORITHM = AES_256,
@@ -160,6 +161,8 @@ WITH INIT,
 ';
 GO
 
+USE master;
+GO
 
 EXEC dbo.sp_add_schedule
     @schedule_name = N'SmartBankDB - Every 15 Minutes',
@@ -172,6 +175,8 @@ EXEC dbo.sp_add_schedule
     @active_end_time = 235959;        -- 23:59:59
 GO
 
+USE master;
+GO
 
 EXEC dbo.sp_attach_schedule
     @job_name = N'SmartBankDB - Transaction Log Backup',
@@ -219,7 +224,7 @@ GO
 -- Recovery Demo
 ------------------------------------------------------
 USE SmartBankDB
-select * from Account
+select * from TransactionRecord
 
 -- 1. Full Backup
 USE msdb;
@@ -237,9 +242,9 @@ GO
 USE SmartBankDB;
 GO
 
-UPDATE Account
-SET Balance = Balance + 10
-WHERE AccountID = 'A000000001';
+EXECUTE AS LOGIN = 'C00001';
+EXEC sp_Deposit @AccountID = 'A000000001', @Amount = 50.00;
+REVERT;
 GO
 
 -- 3. Differential 
@@ -253,9 +258,9 @@ GO
 USE SmartBankDB;
 GO
 
-UPDATE Account
-SET Balance = Balance + 30
-WHERE AccountID = 'A000000001';
+EXECUTE AS LOGIN = 'C00001';
+EXEC sp_Deposit @AccountID = 'A000000001', @Amount = 20.00;
+REVERT;
 GO
 
 -- 5. Log Backup
@@ -265,18 +270,41 @@ EXEC dbo.sp_start_job
     @job_name = N'SmartBankDB - Transaction Log Backup';
 GO
 
+USE SmartBankDB;
+Select * From TransactionRecord;
+GO
+
 -- 6. Simulate data loss
+Select GetDate()
+
 USE SmartBankDB;
 GO
+DELETE FROM TransactionRecord
+WHERE TransID = 1
 
-UPDATE Account
-SET Balance = 0
-WHERE AccountID = 'A000000001';
+Select * From TransactionRecord;
 GO
 
-SELECT AccountID, Balance
-FROM Account
-WHERE AccountID = 'A000000001';
+-- 7. Capture final portion of the transaction log
+USE master;
+GO
+
+BACKUP LOG SmartBankDB
+TO DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_TailLog.trn'
+WITH NO_TRUNCATE,
+     INIT,
+     COMPRESSION,
+     ENCRYPTION (
+         ALGORITHM = AES_256,
+         SERVER CERTIFICATE = SmartBankBackupCert
+     ),
+     NAME = 'SmartBankDB-Tail Log Backup',
+     DESCRIPTION = 'Emergency tail-log backup for point-in-time recovery';
+GO
+
+-- Verify
+RESTORE HEADERONLY
+FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_TailLog.trn';
 GO
 
 -- 7.  Restore
@@ -284,10 +312,10 @@ RESTORE DATABASE SmartBankDB_Recovery
 FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Full.bak'
 WITH
     MOVE 'SmartBankDB'
-    TO 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\SmartBankDB_Recovery.mdf',
+    TO 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\SmartBankDB_Recovery_test2.mdf',
 
     MOVE 'SmartBankDB_log'
-    TO 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\SmartBankDB_Recovery_log.ldf',
+    TO 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\SmartBankDB_Recovery_test2_log.ldf',
 
     NORECOVERY;
 GO
@@ -299,16 +327,33 @@ GO
 
 RESTORE LOG SmartBankDB_Recovery
 FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Log.trn'
-WITH RECOVERY;
+WITH NORECOVERY;
+GO
+
+RESTORE LOG SmartBankDB_Recovery
+FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_TailLog.trn'
+WITH
+    STOPAT = '2026-08-21 09:37:03.583', -- (Change to record date)
+    RECOVERY,
+    STATS = 10;
+GO
+---
+USE master;
+GO
+
+SELECT
+    DB_NAME(database_id) AS DatabaseName,
+    name AS LogicalFileName,
+    physical_name
+FROM sys.master_files
+WHERE physical_name LIKE '%SmartBankDB_Recovery%';
 GO
 
 -- 8. Check Restore Database (Should be the value when transaction log backup activate)
 USE SmartBankDB_Recovery;
 GO
 
-SELECT AccountID, Balance
-FROM Account
-WHERE AccountID = 'A000000001';
+SELECT * FROM TransactionRecord;
 GO
 
 -- 9. Recover to SmartBank_DB
@@ -333,3 +378,66 @@ GO
 -- Verify
 Use SmartBankDB
 Select * From Account
+
+USE master;
+GO
+
+
+--------------------------------------------------------------------------
+-- Check backup activity
+USE msdb;
+GO
+
+SELECT TOP 20
+    j.name AS JobName,
+    h.step_id,
+    h.step_name,
+    h.run_date,
+    h.run_time,
+    h.run_status,
+    h.message
+FROM dbo.sysjobhistory AS h
+INNER JOIN dbo.sysjobs AS j
+    ON h.job_id = j.job_id
+WHERE j.name = N'SmartBankDB - Transaction Log Backup'
+ORDER BY
+    h.instance_id DESC;
+GO
+
+USE msdb;
+GO
+
+SELECT TOP 50
+    j.name AS JobName,
+
+    msdb.dbo.agent_datetime(
+        h.run_date,
+        h.run_time
+    ) AS RunDateTime,
+
+    CASE h.run_status
+        WHEN 0 THEN 'Failed'
+        WHEN 1 THEN 'Succeeded'
+        WHEN 2 THEN 'Retry'
+        WHEN 3 THEN 'Cancelled'
+        WHEN 4 THEN 'In Progress'
+        ELSE 'Unknown'
+    END AS Status,
+
+    h.message AS Message
+
+FROM dbo.sysjobhistory AS h
+JOIN dbo.sysjobs AS j
+    ON h.job_id = j.job_id
+
+WHERE j.name IN (
+    N'SmartBankDB - Full Backup',
+    N'SmartBankDB - Differential Backup',
+    N'SmartBankDB - Transaction Log Backup'
+)
+AND h.step_id = 0
+
+ORDER BY
+    h.run_date DESC,
+    h.run_time DESC;
+GO
