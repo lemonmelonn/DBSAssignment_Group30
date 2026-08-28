@@ -99,6 +99,8 @@ BEGIN
 	BEGIN TRY
 		IF NOT EXISTS (SELECT 1 FROM Staff WHERE StaffID = @StaffID)
 			THROW 50010, 'Staff record not found', 1;
+        IF NOT EXISTS (SELECT 1 FROM Staff  WHERE StaffID = @StaffIDAND Position = 'Bank Officer')
+            THROW 50012, 'The specified StaffID does not belong to a Bank Officer', 1;
 
 		UPDATE Staff
 		SET StaffName	= ISNULL(@StaffName, StaffName),
