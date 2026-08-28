@@ -266,9 +266,15 @@ BEGIN
         UPDATE Customer
         SET CustomerName = ISNULL(@CustomerName, CustomerName),
             ICNumber     = ISNULL(ENCRYPTBYKEY(KEY_GUID('CustomerICKey'), @ICNumber), ICNumber),
-            Phone        = ISNULL(@Phone, Phone),
             Address      = ISNULL(@Address, Address)
         WHERE CustomerID = @CustomerID;
+
+        IF @Phone IS NOT NULL
+        BEGIN
+            UPDATE Customer
+            SET Phone = @Phone
+            WHERE CustomerID = @CustomerID;
+        END;
 
         CLOSE SYMMETRIC KEY CustomerICKey;
 
@@ -409,15 +415,21 @@ BEGIN
     DECLARE @Owner      varchar(6);
     DECLARE @StoredHash varbinary(64);
     DECLARE @StoredSalt varbinary(16);
+    DECLARE @CurrentUser varchar(6);
+
+    SET @CurrentUser = SUSER_SNAME();
 
     BEGIN TRY
-        SELECT @Owner = CustomerID, @StoredHash = PinHash, @StoredSalt = PinSalt FROM Account WHERE AccountID = @AccountID;
+        EXEC sys.sp_set_session_context
+                @key = N'AllowTransfer',
+                @value = 1;
+        SELECT @Owner = CustomerID, @StoredHash = PinHash, @StoredSalt = PinSalt FROM dbo.Account WHERE AccountID = @AccountID;
 
         IF @Owner IS NULL
             THROW 50030, 'Account does not exist', 1;
-        IF NOT EXISTS (SELECT AccountID FROM Account WHERE AccountID = @ToAccountID)
+        IF NOT EXISTS (SELECT AccountID FROM dbo.Account WHERE AccountID = @ToAccountID)
             THROW 50030, 'Destination account does not exist', 1;
-        IF @Owner <> SUSER_SNAME()
+        IF @Owner <> @CurrentUser
             THROW 50031, 'Access denied: not your account', 1;
         IF HASHBYTES('SHA2_256', CONCAT(@Pin, @StoredSalt)) <> @StoredHash
             THROW 50035, 'Incorrect PIN', 1;
@@ -429,9 +441,9 @@ BEGIN
             THROW 50034, 'Cannot transfer to the same account', 1;
         
         BEGIN TRANSACTION;
-        UPDATE Account 
+        UPDATE dbo.Account 
             SET Balance = Balance - @Amount WHERE AccountID = @AccountID;
-        UPDATE Account
+        UPDATE dbo.Account
             SET Balance = Balance + @Amount WHERE AccountID = @ToAccountID;
         INSERT INTO TransactionRecord(AccountID, TransDate, Amount, TransactionType)
         VALUES(@AccountID, GETDATE(), @Amount, 'Transfer');

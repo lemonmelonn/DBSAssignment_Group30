@@ -75,8 +75,8 @@ GO
 -- 3. View all customer accounts
 CREATE VIEW vw_AllCustomerAccount
 AS
-SELECT c.CustomerID, c.CustomerName, a.AccountID, a.AccountType, a.Balance FROM Customer c
-JOIN Account a on c.CustomerID = a.CustomerID;
+SELECT c.CustomerID, c.CustomerName, c.Phone, a.AccountID, a.AccountType, a.Balance FROM Customer c
+LEFT JOIN Account a on c.CustomerID = a.CustomerID;
 GO
 
 -- 4. View all transactions
@@ -144,7 +144,8 @@ WHERE
     IS_SRVROLEMEMBER('sysadmin') = 1
     OR IS_MEMBER('bank_manager') = 1
     OR IS_MEMBER('bank_officer') = 1
-    OR @CustomerID = SUSER_SNAME();
+    OR @CustomerID = SUSER_SNAME()
+	OR SESSION_CONTEXT(N'AllowTransfer') = 1;
 GO
 
 CREATE SECURITY POLICY Security.AccountFilter
@@ -191,28 +192,9 @@ ALTER TABLE Staff
 ALTER COLUMN Salary decimal(10,2) MASKED WITH (FUNCTION = 'random(1000, 9999)') NULL;
 GO
 
+GRANT UNMASK ON dbo.Customer(Phone) TO customer;
 GRANT UNMASK ON Staff(Salary) TO bank_manager;
 
-
--- Server level audit
-USE master;
-GO
-
-CREATE SERVER AUDIT SmartBankAudit
-TO FILE (FILEPATH = 'C:\SQLAssignment\SQLAudit');
-GO
-AlTER SERVER AUDIT SmartBankAudit WITH (STATE = ON);
-GO
-
-USE SmartBankDB;
-GO
-CREATE DATABASE AUDIT SPECIFICATION SmartBankReadAudit
-FOR SERVER AUDIT SmartBankAudit
-ADD (SELECT ON OBJECT::dbo.vw_AllTransactions BY bank_manager, bank_officer),
-ADD (SELECT ON OBJECT::dbo.vw_AllCustomerAccount BY bank_manager, bank_officer),
-ADD (SELECT ON OBJECT::dbo.vw_AllBankOfficers BY bank_manager)
-WITH (STATE = ON);
-GO
 
 -- Encrypt Server
 /*

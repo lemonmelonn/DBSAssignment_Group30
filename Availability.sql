@@ -12,11 +12,24 @@ GO
 ---------------------------------------------------------------
 -- Backup Encryption setup
 ---------------------------------------------------------------
-CREATE MASTER KEY ENCRYPTION BY PASSWORD = 'SmartBank@2026SecureKey!';
-GO
+IF NOT EXISTS
+(
+    SELECT 1
+    FROM sys.symmetric_keys
+    WHERE name = '##MS_DatabaseMasterKey##'
+)
+BEGIN
+    PRINT 'Creating Database Master Key...';
 
-CREATE CERTIFICATE SmartBankBackupCert
-WITH SUBJECT = 'Certificate for SmartBankDB Backup Encryption';
+    CREATE MASTER KEY
+        ENCRYPTION BY PASSWORD = 'SmartBank@2026SecureKey!';
+
+    PRINT 'Database Master Key created.';
+END
+ELSE
+BEGIN
+    PRINT 'Database Master Key already exists. Skipping creation.';
+END
 GO
 
 ---------------------------------------------------------------
@@ -161,9 +174,6 @@ WITH FORMAT,
 ';
 GO
 
-USE master;
-GO
-
 EXEC dbo.sp_add_schedule
     @schedule_name = N'SmartBankDB - Every 15 Minutes',
     @enabled = 1,
@@ -173,9 +183,6 @@ EXEC dbo.sp_add_schedule
     @freq_subday_interval = 15,      -- Every 15 minutes
     @active_start_time = 000000,      -- 00:00:00
     @active_end_time = 235959;        -- 23:59:59
-GO
-
-USE master;
 GO
 
 EXEC dbo.sp_attach_schedule
