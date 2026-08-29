@@ -574,6 +574,7 @@ ORDER BY TransID;
 GO
 
 -- 9. Export backup certificate
+
 USE master;
 GO
 
