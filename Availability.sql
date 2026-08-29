@@ -55,7 +55,8 @@ EXEC dbo.sp_add_jobstep
     @command = N'
 BACKUP DATABASE SmartBankDB
 TO DISK = ''C:\SQLAssignment\SQLBackups\SmartBankDB_Full.bak''
-WITH INIT,
+WITH FORMAT,
+     INIT,
      COMPRESSION,
      ENCRYPTION (
          ALGORITHM = AES_256,
@@ -108,7 +109,8 @@ EXEC dbo.sp_add_jobstep
     @command = N'
 BACKUP DATABASE SmartBankDB
 TO DISK = ''C:\SQLAssignment\SQLBackups\SmartBankDB_Diff.bak''
-WITH DIFFERENTIAL,
+WITH FORMAT,
+     DIFFERENTIAL,
      INIT,
      COMPRESSION,
      ENCRYPTION (
@@ -146,7 +148,6 @@ GO
 -- 3. CREATE TRANSACTION LOG BACKUP JOB
 --    Schedule: Every 15 minutes
 ---------------------------------------------------------------
-
 EXEC dbo.sp_add_job
     @job_name = N'SmartBankDB - Transaction Log Backup',
     @enabled = 1,
@@ -226,169 +227,6 @@ SELECT
 FROM dbo.sysschedules
 WHERE name LIKE 'SmartBankDB -%';
 GO
-
-
--- Recovery Demo
-------------------------------------------------------
-USE SmartBankDB
-select * from TransactionRecord
-
--- 1. Full Backup
-USE msdb;
-GO
-EXEC dbo.sp_start_job
-    @job_name = N'SmartBankDB - Full Backup';
-GO
-
--- Check whether backup is encrypted
-RESTORE HEADERONLY
-    FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Full.bak';
-GO
-
--- 2. Test change
-USE SmartBankDB;
-GO
-
-EXECUTE AS LOGIN = 'C00001';
-EXEC sp_Deposit @AccountID = 'A000000001', @Amount = 50.00;
-REVERT;
-GO
-
--- 3. Differential 
-USE msdb;
-GO
-EXEC dbo.sp_start_job
-    @job_name = N'SmartBankDB - Differential Backup';
-GO
-
--- 4. Test another change
-USE SmartBankDB;
-GO
-
-EXECUTE AS LOGIN = 'C00001';
-EXEC sp_Deposit @AccountID = 'A000000001', @Amount = 20.00;
-REVERT;
-GO
-
--- 5. Log Backup
-USE msdb;
-GO
-EXEC dbo.sp_start_job
-    @job_name = N'SmartBankDB - Transaction Log Backup';
-GO
-
-USE SmartBankDB;
-Select * From TransactionRecord;
-GO
-
--- 6. Simulate data loss
-Select GetDate()
-
-USE SmartBankDB;
-GO
-DELETE FROM TransactionRecord
-WHERE TransID = 1
-
-Select * From TransactionRecord;
-GO
-
--- 7. Capture final portion of the transaction log
-USE master;
-GO
-
-BACKUP LOG SmartBankDB
-TO DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_TailLog.trn'
-WITH NO_TRUNCATE,
-     INIT,
-     COMPRESSION,
-     ENCRYPTION (
-         ALGORITHM = AES_256,
-         SERVER CERTIFICATE = SmartBankBackupCert
-     ),
-     NAME = 'SmartBankDB-Tail Log Backup',
-     DESCRIPTION = 'Emergency tail-log backup for point-in-time recovery';
-GO
-
--- Verify
-RESTORE HEADERONLY
-FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_TailLog.trn';
-GO
-
--- 7.  Restore
-RESTORE DATABASE SmartBankDB_Recovery
-FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Full.bak'
-WITH
-    MOVE 'SmartBankDB'
-    TO 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\SmartBankDB_Recovery_test2.mdf',
-
-    MOVE 'SmartBankDB_log'
-    TO 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\SmartBankDB_Recovery_test2_log.ldf',
-
-    NORECOVERY;
-GO
-
-RESTORE DATABASE SmartBankDB_Recovery
-FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Diff.bak'
-WITH NORECOVERY;
-GO
-
-RESTORE LOG SmartBankDB_Recovery
-FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Log.trn'
-WITH NORECOVERY;
-GO
-
-RESTORE LOG SmartBankDB_Recovery
-FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_TailLog.trn'
-WITH
-    STOPAT = '2026-08-21 09:37:03.583', -- (Change to record date)
-    RECOVERY,
-    STATS = 10;
-GO
----
-USE master;
-GO
-
-SELECT
-    DB_NAME(database_id) AS DatabaseName,
-    name AS LogicalFileName,
-    physical_name
-FROM sys.master_files
-WHERE physical_name LIKE '%SmartBankDB_Recovery%';
-GO
-
--- 8. Check Restore Database (Should be the value when transaction log backup activate)
-USE SmartBankDB_Recovery;
-GO
-
-SELECT * FROM TransactionRecord;
-GO
-
--- 9. Recover to SmartBank_DB
--- Disconnet all uses
-USE master
-ALTER DATABASE SmartBankDB
-SET SINGLE_USER
-WITH ROLLBACK IMMEDIATE;
-GO
--- Rename damaged database
-ALTER DATABASE SmartBankDB
-MODIFY NAME = SmartBankDB_Damaged;
-GO
--- Rename recover database
-ALTER DATABASE SmartBankDB_Recovery
-MODIFY NAME = SmartBankDB;
-GO
--- Set to multi user
-ALTER DATABASE SmartBankDB
-SET MULTI_USER;
-GO
--- Verify
-Use SmartBankDB
-Select * From Account
-
-USE master;
-GO
-
 
 --------------------------------------------------------------------------
 -- Check backup activity

@@ -41,7 +41,7 @@ Create Table TransactionRecord(
 
 
 -- Create Role
-CREATE ROLE db_admin;
+CREATE ROLE -;
 CREATE ROLE bank_manager;
 CREATE ROLE bank_officer;
 CREATE ROLE customer;

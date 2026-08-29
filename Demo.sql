@@ -175,6 +175,7 @@ GRANT CONTROL ON SYMMETRIC KEY::CustomerICKey TO customer;
 GO
 
 EXECUTE AS LOGIN = 'C00001';
+SELECT * FROM Customer;
 OPEN SYMMETRIC KEY CustomerICKey
 DECRYPTION BY CERTIFICATE CustomerICCert;
 
@@ -191,7 +192,7 @@ REVERT;
 GO
 
 --------------------------------------------------------------------------------
-------------- Confidentiality
+------------- Integrity
 -- Create and Alter Table
 EXECUTE AS LOGIN = 'DB0001';
 CREATE TABLE Payment(
@@ -199,8 +200,9 @@ CREATE TABLE Payment(
 	PaymentType varchar(100),
 );
 REVERT;
-SELECT SUSER_NAME()
+GRANT SELECT ON dbo.Payment TO db_admin;
 
+SELECT SUSER_NAME()
 
 SELECT * FROM Payment
 GO
@@ -211,6 +213,8 @@ GO
 
 DROP TABLE Payment;
 GO
+REVERT;
+
 
 -- sp_UpdateOwnStaffRecord
 EXECUTE AS LOGIN = 'DB0001';
@@ -266,7 +270,7 @@ EXEC sp_UpdateCustomer
 
 -- sp_DeleteCustomer
 EXEC sp_DeleteCustomer
-    @CustomerID = 'C00003';
+    @CustomerID = 'C00003'; -- cannot delete if the customer has at least one account due to Foreign Key dependency
 
 -- sp_CreateAccount
 EXEC sp_CreateAccount
@@ -302,3 +306,309 @@ REVERT;
 EXECUTE AS LOGIN = 'C00001';
 SELECT * FROM Account;
 REVERT;
+
+-- audit server
+USE master;
+GO
+
+SELECT * FROM sys.server_audits
+WHERE name = 'SmartBankAudit';
+GO
+
+USE master;
+GO
+
+SELECT
+    event_time,
+    action_id,
+    succeeded,
+    server_principal_name,
+    database_name,
+    schema_name,
+    object_name,
+    statement
+FROM sys.fn_get_audit_file(
+    'C:\SQLAssignment\SQLAudit\*.sqlaudit',
+    DEFAULT,
+    DEFAULT
+)
+WHERE database_name = 'SmartBankDB'
+ORDER BY event_time DESC;
+GO
+
+-- Specified action for (view)
+SELECT
+    event_time,
+    server_principal_name,
+    database_name,
+    schema_name,
+    object_name,
+    succeeded,
+    statement
+FROM sys.fn_get_audit_file(
+    'C:\SQLAssignment\SQLAudit\*.sqlaudit',
+    DEFAULT,
+    DEFAULT
+)
+WHERE database_name = 'SmartBankDB'
+  AND object_name IN
+  (
+      'vw_AllCustomerAccount',
+      'vw_AllTransactions',
+      'vw_AllBankOfficers'
+  )
+ORDER BY event_time DESC;
+
+-- Customer Audit Table
+USE SmartBankDB;
+GO
+
+SELECT * FROM AuditLog;
+GO
+
+-----------------------------------------------------------------------------
+--------- Availability
+
+-- Show schedule
+USE msdb;
+GO
+
+SELECT
+    j.name AS JobName,
+    msdb.dbo.agent_datetime(h.run_date, h.run_time) AS RunDateTime,
+    CASE h.run_status
+        WHEN 0 THEN 'Failed'
+        WHEN 1 THEN 'Succeeded'
+        WHEN 2 THEN 'Retry'
+        WHEN 3 THEN 'Cancelled'
+        WHEN 4 THEN 'In Progress'
+        ELSE 'Unknown'
+    END AS Status,
+    h.message AS Message
+FROM dbo.sysjobhistory AS h
+JOIN dbo.sysjobs AS j ON h.job_id = j.job_id
+WHERE j.name IN
+(
+    N'SmartBankDB - Full Backup',
+    N'SmartBankDB - Differential Backup',
+    N'SmartBankDB - Transaction Log Backup'
+)
+AND h.step_id = 0
+ORDER BY RunDateTime DESC;
+GO
+
+USE msdb;
+GO
+
+SELECT TOP 10
+    j.name AS JobName,
+    msdb.dbo.agent_datetime(h.run_date, h.run_time) AS RunDateTime,
+    h.step_id,
+    h.step_name,
+    CASE h.run_status
+        WHEN 0 THEN 'Failed'
+        WHEN 1 THEN 'Succeeded'
+        WHEN 2 THEN 'Retry'
+        WHEN 3 THEN 'Cancelled'
+        WHEN 4 THEN 'In Progress'
+        ELSE 'Unknown'
+    END AS Status,
+    h.message
+FROM dbo.sysjobhistory h
+JOIN dbo.sysjobs j
+    ON h.job_id = j.job_id
+WHERE j.name IN (
+    N'SmartBankDB - Full Backup',
+    N'SmartBankDB - Differential Backup',
+    N'SmartBankDB - Transaction Log Backup'
+)
+ORDER BY h.instance_id DESC;
+GO
+
+-- 1. Manual Fresh Full backup 
+USE msdb;
+GO
+
+EXEC dbo.sp_start_job
+    @job_name = N'SmartBankDB - Full Backup';
+GO
+
+RESTORE HEADERONLY FROM DISK = 'C:\SQLAssignment\SQLBackups\SmartBankDB_Full.bak'; -- Show backup file is encrypted
+GO
+
+-- 2. First test change
+USE SmartBankDB;
+GO
+EXECUTE AS LOGIN = 'C00001';
+SELECT * FROM TransactionRecord
+
+EXEC sp_Deposit
+    @AccountID = 'A000000001',
+    @Amount = 50.00;
+
+REVERT;
+GO
+
+-- 3. Manual Fresh Differential backup 
+USE msdb;
+GO
+
+EXEC dbo.sp_start_job
+    @job_name = N'SmartBankDB - Differential Backup';
+GO
+
+-- 4. Second test change
+USE SmartBankDB;
+GO
+
+EXECUTE AS LOGIN = 'C00001';
+
+EXEC sp_Deposit
+    @AccountID = 'A000000001',
+    @Amount = 20.00;
+
+REVERT;
+GO
+
+-- 5. Manual Log Transaction
+USE msdb;
+GO
+
+EXEC dbo.sp_start_job
+    @job_name = N'SmartBankDB - Transaction Log Backup';
+GO
+
+USE SmartBankDB;
+GO
+SELECT * FROM TransactionRecord ORDER BY TransID;
+
+-- 6. Demo Accidentally data deletion
+Select GetDate()
+
+DELETE FROM TransactionRecord
+WHERE TransID = 2;
+GO
+
+SELECT * FROM TransactionRecord ORDER BY TransID;
+
+-- 7. Immediately perform Tail-Log Backup
+USE master;
+GO
+
+BACKUP LOG SmartBankDB
+TO DISK =
+'C:\SQLAssignment\SQLBackups\SmartBankDB_TailLog.trn'
+WITH NO_TRUNCATE,
+     INIT,
+     COMPRESSION,
+     ENCRYPTION
+     (
+         ALGORITHM = AES_256,
+         SERVER CERTIFICATE = SmartBankBackupCert
+     ),
+     NAME = 'SmartBankDB-Tail Log Backup',
+     DESCRIPTION = 'Emergency tail-log backup for point-in-time recovery';
+GO
+
+-- 8. Restore to a NEW database
+USE master;
+GO
+
+IF DB_ID('SmartBankDB_Recovery') IS NOT NULL
+BEGIN
+    ALTER DATABASE SmartBankDB_Recovery
+    SET SINGLE_USER
+    WITH ROLLBACK IMMEDIATE;
+
+    DROP DATABASE SmartBankDB_Recovery;
+END
+GO
+
+-- 8.1 Restore Full backup
+RESTORE DATABASE SmartBankDB_Recovery
+FROM DISK =
+'C:\SQLAssignment\SQLBackups\SmartBankDB_Full.bak'
+WITH
+    MOVE 'SmartBankDB'
+    TO 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\SmartBankDB_Recovery.mdf',
+
+    MOVE 'SmartBankDB_log'
+    TO 'C:\Program Files\Microsoft SQL Server\MSSQL16.MSSQLSERVER\MSSQL\DATA\SmartBankDB_Recovery_log.ldf',
+
+    NORECOVERY,
+    STATS = 10;
+GO
+
+-- 8.2 Restore Differential
+RESTORE DATABASE SmartBankDB_Recovery
+FROM DISK =
+'C:\SQLAssignment\SQLBackups\SmartBankDB_Diff.bak'
+WITH NORECOVERY,
+     STATS = 10;
+GO
+
+-- 8.3 Restore regular LOG
+RESTORE LOG SmartBankDB_Recovery
+FROM DISK =
+'C:\SQLAssignment\SQLBackups\SmartBankDB_Log.trn'
+WITH NORECOVERY,
+     STATS = 10;
+GO
+
+-- 8.4 Restore TAIL LOG to the point before deletion
+RESTORE LOG SmartBankDB_Recovery
+FROM DISK =
+'C:\SQLAssignment\SQLBackups\SmartBankDB_TailLog.trn'
+WITH
+    STOPAT = '2026-08-29 14:38:34.940',
+    RECOVERY,
+    STATS = 10;
+GO
+
+USE SmartBankDB_Recovery;
+GO
+
+SELECT *
+FROM TransactionRecord
+ORDER BY TransID;
+GO
+
+-- 9. Export backup certificate
+USE master;
+GO
+
+BACKUP CERTIFICATE SmartBankBackupCert
+TO FILE = 'C:\SQLAssignment\SQLBackups\SmartBankBackupCert.cer'
+WITH PRIVATE KEY
+(
+    FILE = 'C:\SQLAssignment\SQLBackups\SmartBankBackupCert.pvk',
+    ENCRYPTION BY PASSWORD = 'CertificateExport@2026!'
+);
+GO
+
+-- 10. Recover to SmartBank_DB
+-- Disconnet all uses
+USE master
+ALTER DATABASE SmartBankDB
+SET SINGLE_USER
+WITH ROLLBACK IMMEDIATE;
+GO
+-- Rename damaged database
+ALTER DATABASE SmartBankDB
+MODIFY NAME = SmartBankDB_Damaged;
+GO
+-- Rename recover database
+ALTER DATABASE SmartBankDB_Recovery
+MODIFY NAME = SmartBankDB;
+GO
+-- Set to multi user
+ALTER DATABASE SmartBankDB
+SET MULTI_USER;
+GO
+
+USE SmartBankDB
+SELECT * FROM TransactionRecord ORDER BY TransID;
+GO
+
+USE master;
+GO
