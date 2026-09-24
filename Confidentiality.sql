@@ -15,7 +15,7 @@ Create Table Staff(
 Create Table Customer(
 	CustomerID varchar(6) primary key,
 	CustomerName varchar(100),
-	ICNumber varchar(20),
+	ICNumber varbinary(256),
 	Phone varchar(20),
 	Address varchar(200)
 );
@@ -24,7 +24,8 @@ Create Table Account(
 	CustomerID varchar(6),
 	AccountType varchar(20),
 	Balance decimal(12,2),
-	Pin char(6)
+	PinHash varbinary(64),
+	PinSalt varbinary(16),
 
 	FOREIGN KEY (CustomerID) REFERENCES Customer(CustomerID)
 );
@@ -38,46 +39,13 @@ Create Table TransactionRecord(
 	FOREIGN KEY (AccountID) REFERENCES Account(AccountID)
 );
 
--- Foreign Key connections
-
-
 
 -- Create Role
-CREATE ROLE db_admin;
+CREATE ROLE -;
 CREATE ROLE bank_manager;
 CREATE ROLE bank_officer;
 CREATE ROLE customer;
 
--- Create Login
-CREATE LOGIN [BM00001] WITH PASSWORD = 'BM00001PWD';
-CREATE USER [BM00001] FOR LOGIN [BM00001];
-ALTER ROLE bank_manager ADD MEMBER [BM00001];
-GO
-
-CREATE LOGIN [BO00001] WITH PASSWORD = 'BO00001PWD';
-CREATE USER  [BO00001] FOR LOGIN [BO00001];
-ALTER ROLE bank_officer ADD MEMBER [BO00001];
-GO
-
-CREATE LOGIN [C00001] WITH PASSWORD = 'C00001PWD';
-CREATE USER  [C00001] FOR LOGIN [C00001];
-ALTER ROLE customer ADD MEMBER [C00001];
-GO
-
--- Test as Bank Manager
-EXECUTE AS LOGIN = 'BM00001';
-SELECT * FROM vw_MyStaffRecord;   -- should return only BM001's row
-SELECT * FROM Staff;  -- should fail (denied)
-SELECT SUSER_SNAME()
-REVERT;
-GO
-
-EXECUTE AS LOGIN = 'C00001';
-SELECT * FROM vw_MyStaffRecord;
-REVERT;
-GO
-
-SELECT SUSER_NAMES()
 
 -- All user can access this view
 CREATE VIEW vw_StaffPublic
@@ -104,10 +72,11 @@ SELECT * FROM Staff
 WHERE Position = 'Bank Officer';
 GO
 
--- 3. View all customer accounts **(Need to join with account table?)
-CREATE VIEW vw_AllCustomer
+-- 3. View all customer accounts
+CREATE VIEW vw_AllCustomerAccount
 AS
-SELECT * FROM Customer;
+SELECT c.CustomerID, c.CustomerName, c.Phone, a.AccountID, a.AccountType, a.Balance FROM Customer c
+LEFT JOIN Account a on c.CustomerID = a.CustomerID;
 GO
 
 -- 4. View all transactions
@@ -119,7 +88,7 @@ GO
 -- Grant permissions to the bank_manager role
 GRANT SELECT ON vw_MyStaffRecord TO bank_manager;
 GRANT SELECT ON vw_AllBankOfficers TO bank_manager;
-GRANT SELECT ON vw_AllCustomer TO bank_manager;
+GRANT SELECT ON vw_AllCustomerAccount TO bank_manager;
 GRANT SELECT ON vw_AllTransactions TO bank_manager;
 
 ------------- Bank Officers Permissions -------------
@@ -128,10 +97,12 @@ GRANT SELECT ON vw_MyStaffRecord TO bank_officer;
 GO
 
 -- 2. View all customer accounts
-GRANT SELECT ON vw_AllCustomer TO bank_officer;
+GRANT SELECT ON vw_AllCustomerAccount TO bank_officer;
+GO
 
 -- 3. View all transactions
 GRANT SELECT ON vw_AllTransactions TO bank_officer;
+GO
 
 ------------- Database Admin (DBA) permissions -------------
 -- 1. View only their own record (reuse)
@@ -141,19 +112,105 @@ GO
 
 ------------- Customer Permissions -------------
 -- 1. View only their own record
-CREATE VIEW vw_MyCustomerAccounts
+-- Security Policy
+CREATE SCHEMA Security;
+GO
+-- Customer
+CREATE FUNCTION Security.fn_CustomerAccessPredicate(@CustomerID varchar(6))
+RETURNS TABLE
+WITH SCHEMABINDING
 AS
-SELECT * FROM Customer
-WHERE CustomerID = SUSER_SNAME();
+RETURN SELECT 1 AS fn_result
+WHERE
+    IS_SRVROLEMEMBER('sysadmin') = 1
+    OR IS_MEMBER('bank_manager') = 1
+    OR IS_MEMBER('bank_officer') = 1
+    OR @CustomerID = SUSER_SNAME();
+GO
+
+CREATE SECURITY POLICY Security.CustomerFilter
+ADD FILTER PREDICATE Security.fn_CustomerAccessPredicate(CustomerID)
+ON dbo.Customer
+WITH (STATE = ON);
+GO
+
+-- Account
+CREATE FUNCTION Security.fn_AccountAccessPredicate(@CustomerID varchar(6))
+RETURNS TABLE
+WITH SCHEMABINDING
+AS
+RETURN SELECT 1 AS fn_result
+WHERE
+    IS_SRVROLEMEMBER('sysadmin') = 1
+    OR IS_MEMBER('bank_manager') = 1
+    OR IS_MEMBER('bank_officer') = 1
+    OR @CustomerID = SUSER_SNAME()
+	OR SESSION_CONTEXT(N'AllowTransfer') = 1;
+GO
+
+CREATE SECURITY POLICY Security.AccountFilter
+ADD FILTER PREDICATE Security.fn_AccountAccessPredicate(CustomerID)
+ON dbo.Account
+WITH (STATE = ON);
 GO
 
 --2. View only their own transactions
-CREATE VIEW vw_MyTransactionRecords
+-- TransactionRecord
+CREATE FUNCTION Security.fn_TransactionAccessPredicate(@AccountID varchar(10))
+RETURNS TABLE
+WITH SCHEMABINDING
 AS
-SELECT * FROM TransactionRecord t
-JOIN Account a on t.AccountID = a.AccountID
-WHERE a.CustomerID = SUSER_SNAME();
+RETURN SELECT 1 AS fn_result
+WHERE
+    IS_SRVROLEMEMBER('sysadmin') = 1
+    OR IS_MEMBER('bank_manager') = 1
+    OR IS_MEMBER('bank_officer') = 1
+    OR EXISTS (
+        SELECT 1 FROM dbo.Account a
+        WHERE a.AccountID = @AccountID AND a.CustomerID = SUSER_SNAME()
+    );
 GO
 
-GRANT SELECT ON vw_MyCustomerAccounts   TO customer;
-GRANT SELECT ON vw_MyTransactionRecords TO customer;
+CREATE SECURITY POLICY Security.TransactionFilter
+ADD FILTER PREDICATE Security.fn_TransactionAccessPredicate(AccountID)
+ON dbo.TransactionRecord
+WITH (STATE = ON);
+GO
+
+GRANT SELECT ON dbo.Customer TO customer;
+GRANT SELECT ON dbo.Account TO customer;
+GRANT SELECT ON dbo.TransactionRecord TO customer;
+
+-----------------------------------------------------------------------------------------
+--- Data Protection
+--  Dynamic Data Masking (DDM)
+ALTER TABLE Customer
+ALTER COLUMN Phone varchar(20) MASKED WITH (FUNCTION = 'partial(2,"XXXXX",2)') NULL;
+GO
+
+ALTER TABLE Staff
+ALTER COLUMN Salary decimal(10,2) MASKED WITH (FUNCTION = 'random(1000, 9999)') NULL;
+GO
+
+GRANT UNMASK ON dbo.Customer(Phone) TO customer;
+GRANT UNMASK ON Staff(Salary) TO bank_manager;
+
+
+-- Encrypt Server
+/*
+USE master;
+GO
+CREATE MASTER KEY ENCRYPTION BY PASSWORD = 'Str0ng!ServerMasterKeyPwd123';
+GO
+CREATE CERTIFICATE SmartBankTDECert WITH SUBJECT = 'SmartBankDB TDE Certificate';
+GO
+
+USE SmartBankDB;
+GO
+CREATE DATABASE ENCRYPTION KEY
+WITH ALGORITHM = AES_256
+ENCRYPTION BY SERVER CERTIFICATE SmartBankTDECert;
+GO
+ALTER DATABASE SmartBankDB SET ENCRYPTION ON;
+GO
+*/
