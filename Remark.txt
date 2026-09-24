@@ -1,3 +1,0 @@
-How to handle his/her Account when Customer got delete
-    - Teacher: Account that link to this customer should be automatically deleted, but is recoverable (any deletion should be recoverable)
-User login with ID/ Name
